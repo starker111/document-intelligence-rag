@@ -1,0 +1,590 @@
+{
+  "name": "Document Intelligence RAG",
+  "nodes": [
+    {
+      "parameters": {
+        "operation": "pdf",
+        "binaryPropertyName": "file0",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.extractFromFile",
+      "typeVersion": 1.1,
+      "position": [
+        80,
+        32
+      ],
+      "id": "99a4e460-6635-4cbc-a9cb-fcfd16d131cb",
+      "name": "Extract from File"
+    },
+    {
+      "parameters": {
+        "jsCode": "const input = $input.first().json;\n\nconst text =\n  input.text ||\n  input.data ||\n  input.content ||\n  input.extractedText ||\n  \"\";\n\nif (!text || text.trim().length === 0) {\n  throw new Error(\"No text found from PDF extraction. Use a text-based PDF, not scanned image PDF.\");\n}\n\nconst chunkSize = 1200;\nconst overlap = 150;\n\nconst cleanText = text\n  .replace(/\\r/g, \"\\n\")\n  .replace(/\\n{3,}/g, \"\\n\\n\")\n  .replace(/[ \\t]+/g, \" \")\n  .trim();\n\nconst chunks = [];\nlet start = 0;\nlet chunkIndex = 1;\n\nconst fileName =\n  $input.first().binary?.file?.fileName ||\n  \"uploaded.pdf\";\n\nwhile (start < cleanText.length) {\n  const end = Math.min(start + chunkSize, cleanText.length);\n  const chunkText = cleanText.slice(start, end).trim();\n\n  if (chunkText.length > 50) {\n    chunks.push({\n      json: {\n        chunk_id: `${Date.now()}_chunk_${chunkIndex}`,\n        chunk_number: chunkIndex,\n        text: chunkText,\n        characters: chunkText.length,\n        source_file_name: fileName,\n        created_at: new Date().toISOString()\n      }\n    });\n  }\n\n  chunkIndex++;\n  start += chunkSize - overlap;\n}\n\nreturn chunks;"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        192,
+        -224
+      ],
+      "id": "2d618f19-cc7a-4a7b-9481-ee9bd839a9a0",
+      "name": "Chunk PDF Text"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://127.0.0.1:11434/api/embed",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "model",
+              "value": "nomic-embed-text"
+            },
+            {
+              "name": "input",
+              "value": "=={{$json.text}}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        304,
+        32
+      ],
+      "id": "c00f9bc6-ec63-47fe-9c84-fef6936a9009",
+      "name": "Ollama Embed Chunk"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const original = $('Chunk PDF Text').item.json;\nconst embeddingResponse = $json;\n\nconst embedding = embeddingResponse.embeddings?.[0];\n\nif (!embedding || !Array.isArray(embedding)) {\n  throw new Error(\"No embedding returned from Ollama.\");\n}\n\nreturn {\n  json: {\n    id: original.chunk_id,\n    document: original.text,\n    embedding,\n    metadata: {\n      chunk_number: original.chunk_number,\n      source_file_name: original.source_file_name,\n      characters: original.characters,\n      created_at: original.created_at\n    }\n  }\n};"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        464,
+        -288
+      ],
+      "id": "358e9712-6bac-4dc3-b72c-d32f28a14a36",
+      "name": "Prepare Chroma Record"
+    },
+    {
+      "parameters": {
+        "jsCode": "const items = $input.all();\n\nreturn [\n  {\n    json: {\n      ids: items.map(item => item.json.id),\n      documents: items.map(item => item.json.document),\n      embeddings: items.map(item => item.json.embedding),\n      metadatas: items.map(item => item.json.metadata)\n    }\n  }\n];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        560,
+        48
+      ],
+      "id": "19f94fec-5255-4161-8aaa-5260ee5177ac",
+      "name": "Batch Chroma Payload"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://127.0.0.1:8010/add",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"ids\": {{ JSON.stringify($json.ids) }},\n  \"documents\": {{ JSON.stringify($json.documents) }},\n  \"embeddings\": {{ JSON.stringify($json.embeddings) }},\n  \"metadatas\": {{ JSON.stringify($json.metadatas) }}\n}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        864,
+        16
+      ],
+      "id": "538665a3-fb3f-4c65-b57b-bd240686c78f",
+      "name": "Chroma Add Documents"
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "{\n  \"status\": \"success\",\n  \"message\": \"PDF ingested successfully\",\n  \"chunks_stored\": \"={{$json.added}}\"\n}",
+        "options": {
+          "responseCode": 200
+        }
+      },
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "position": [
+        1056,
+        -208
+      ],
+      "id": "d041d1bc-2052-4456-9145-9badc458370b",
+      "name": "Respond to Webhook"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "return {\n  json: {\n    ids: $json.ids,\n    documents: $json.documents,\n    embeddings: $json.embeddings,\n    metadatas: $json.metadatas\n  }\n};"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        704,
+        -272
+      ],
+      "id": "583b3b4f-0be5-464a-84fc-f1f4e0bdd912",
+      "name": "Build Chroma Request Body"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const question = $json.body?.question || $json.question;\n\nif (!question || question.trim().length === 0) {\n  throw new Error('Missing question. Send JSON body: {\"question\":\"your question\"}');\n}\n\nreturn {\n  json: {\n    question: question.trim()\n  }\n};"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        128,
+        256
+      ],
+      "id": "5a61e4a5-5785-4724-96d0-c69545400842",
+      "name": "Validate Question"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://127.0.0.1:11434/api/embed",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "model",
+              "value": "nomic-embed-text"
+            },
+            {
+              "name": "input",
+              "value": "=={{$json.question}}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        336,
+        256
+      ],
+      "id": "4bea1021-bad3-4f55-be87-63eb34bc4e86",
+      "name": "Ollama Embed Question"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const question = $('Validate Question').item.json.question;\nconst embedding = $json.embeddings?.[0];\n\nif (!embedding || !Array.isArray(embedding)) {\n  throw new Error(\"No question embedding returned from Ollama.\");\n}\n\nreturn {\n  json: {\n    question,\n    embedding,\n    n_results: 5\n  }\n};"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        544,
+        256
+      ],
+      "id": "0f4bcca3-9fdf-4d67-a010-1b87edb13526",
+      "name": "Prepare Chroma Query"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://127.0.0.1:8010/query",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"embedding\": {{ JSON.stringify($json.embedding) }},\n  \"n_results\": {{ $json.n_results }}\n}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        960,
+        256
+      ],
+      "id": "4e3d93ec-4469-4828-98c4-b2f9ed40b4d4",
+      "name": "Chroma Query Top Chunks"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const question = $('Prepare Chroma Query').item.json.question;\n\nconst docs = $json.documents?.[0] || [];\nconst ids = $json.ids?.[0] || [];\nconst metadatas = $json.metadatas?.[0] || [];\nconst distances = $json.distances?.[0] || [];\n\nif (!docs.length) {\n  return {\n    json: {\n      question,\n      prompt: `\nYou are a professional document intelligence assistant.\n\nNo relevant document passages were retrieved.\n\nUser question:\n${question}\n\nReturn a polished answer saying that the uploaded document does not contain enough evidence to answer confidently.\nDo not invent information.\n`,\n      sources: []\n    }\n  };\n}\n\nconst sources = docs.map((doc, index) => ({\n  source_number: index + 1,\n  chunk_id: ids[index] || `source_${index + 1}`,\n  text: doc,\n  metadata: metadatas[index] || {},\n  distance: distances[index]\n}));\n\nconst contextText = sources.map(source => {\n  return `REFERENCE ${source.source_number}\nFile: ${source.metadata?.source_file_name || \"uploaded.pdf\"}\nPassage:\n${source.text}`;\n}).join(\"\\n\\n---\\n\\n\");\n\nconst prompt = `\nYou are a senior AI document analyst.\n\nYour task:\nAnswer the user's question using ONLY the retrieved document passages.\n\nImportant behavior:\n- Give the most useful answer possible from the available passages.\n- Do not begin with phrases like \"Based on the provided sources\" or \"Unfortunately\".\n- Do not expose chunk numbers, internal IDs, embeddings, or similarity scores.\n- Use citations like [1], [2], [3] after claims.\n- If the document only partially answers the question, say that calmly under \"Limitations\".\n- If the user asks for skills, steps, ideas, or strategy, extract implied skills and practical takeaways from the references instead of saying \"not found\" too quickly.\n- Keep the tone polished, concise, and recruiter-friendly.\n\nOutput exactly in this format:\n\n### Answer\nGive a direct answer in 2–4 short paragraphs.\n\n### Key takeaways\n- Takeaway 1 [1]\n- Takeaway 2 [2]\n- Takeaway 3 [3]\n\n### Confidence\nHigh / Medium / Low — explain in one sentence.\n\n### References used\n[1] Briefly explain what reference 1 supports.\n[2] Briefly explain what reference 2 supports.\n[3] Briefly explain what reference 3 supports.\n\nUser question:\n${question}\n\nRetrieved document passages:\n${contextText}\n`;\n\nreturn {\n  json: {\n    question,\n    prompt,\n    sources\n  }\n};"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1168,
+        256
+      ],
+      "id": "0798bfb4-8b8f-4ab4-8c90-cd5b5ff65af9",
+      "name": "Build Answer Prompt"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://127.0.0.1:11434/api/chat",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"model\": \"llama3.1\",\n  \"stream\": false,\n  \"messages\": [\n    {\n      \"role\": \"system\",\n      \"content\": \"You answer questions from uploaded documents. Use only the provided context. Always cite sources.\"\n    },\n    {\n      \"role\": \"user\",\n      \"content\": {{ JSON.stringify($json.prompt) }}\n    }\n  ],\n  \"options\": {\n    \"temperature\": 0.1\n  }\n}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        1360,
+        272
+      ],
+      "id": "04cd1bad-e6e9-4106-a548-5a36e1683a7d",
+      "name": "Ollama Generate Answer"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const ollamaOutput = $json;\n\nconst answer =\n  ollamaOutput.message?.content ||\n  ollamaOutput.response ||\n  ollamaOutput.content ||\n  \"No answer generated.\";\n\nconst question = $('Build Answer Prompt').item.json.question;\nconst sources = $('Build Answer Prompt').item.json.sources || [];\n\nfunction cleanSnippet(text, maxLength = 520) {\n  if (!text) return \"\";\n  const clean = String(text)\n    .replace(/\\s+/g, \" \")\n    .replace(/www\\.[^\\s]+/g, \"\")\n    .trim();\n\n  return clean.length > maxLength ? clean.slice(0, maxLength) + \"...\" : clean;\n}\n\nreturn {\n  json: {\n    question,\n    answer,\n    references: sources.map(source => ({\n      reference_number: source.source_number,\n      title: `Reference ${source.source_number}`,\n      file_name: source.metadata?.source_file_name || \"uploaded.pdf\",\n      snippet: cleanSnippet(source.text)\n    })),\n    debug_sources: sources.map(source => ({\n      source_number: source.source_number,\n      chunk_id: source.chunk_id,\n      chunk_number: source.metadata?.chunk_number,\n      source_file_name: source.metadata?.source_file_name,\n      similarity_distance: source.distance\n    }))\n  }\n};"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1552,
+        272
+      ],
+      "id": "d86f713f-8b73-4529-bf69-33fc2d9cb23d",
+      "name": "Build Final Response"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const question = $json.question;\nconst embedding = $json.embedding;\nconst n_results = 5;\n\nif (!embedding || !Array.isArray(embedding)) {\n  throw new Error(\"Embedding is missing or not an array.\");\n}\n\nreturn {\n  json: {\n    question,\n    embedding,\n    n_results\n  }\n};"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        752,
+        256
+      ],
+      "id": "56ca6a2f-9517-4c52-af3c-d56771d50ad9",
+      "name": "Build Chroma Query Body"
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "ingest",
+        "responseMode": "responseNode",
+        "options": {
+          "binaryPropertyName": "file"
+        }
+      },
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [
+        -32,
+        -240
+      ],
+      "id": "198f63ae-8e85-48b2-b37f-81f3a345e33d",
+      "name": "Ingest PDF",
+      "webhookId": "71e3b999-2560-4d5a-868c-bbd1e85d8cde"
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "ask",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [
+        -48,
+        256
+      ],
+      "id": "885bf8a8-462b-4c09-913a-0aab6bea2698",
+      "name": "Ask Question",
+      "webhookId": "1b0159ec-703a-410c-a62f-59ac9c396889"
+    },
+    {
+      "parameters": {
+        "options": {}
+      },
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "position": [
+        1984,
+        272
+      ],
+      "id": "187f283e-56dc-4825-8e6d-fd219b803701",
+      "name": "Respond to Webhook1"
+    },
+    {
+      "parameters": {
+        "jsCode": "return [\n  {\n    json: {\n      question: $json.question,\n      answer: $json.answer,\n      sources: $json.sources || []\n    }\n  }\n];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1776,
+        272
+      ],
+      "id": "3c165d32-0c2c-43b8-8b89-6a8e2019beba",
+      "name": "Force Final API Response"
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Extract from File": {
+      "main": [
+        [
+          {
+            "node": "Chunk PDF Text",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Chunk PDF Text": {
+      "main": [
+        [
+          {
+            "node": "Ollama Embed Chunk",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Ollama Embed Chunk": {
+      "main": [
+        [
+          {
+            "node": "Prepare Chroma Record",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Chroma Record": {
+      "main": [
+        [
+          {
+            "node": "Batch Chroma Payload",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Batch Chroma Payload": {
+      "main": [
+        [
+          {
+            "node": "Build Chroma Request Body",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Chroma Add Documents": {
+      "main": [
+        [
+          {
+            "node": "Respond to Webhook",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Chroma Request Body": {
+      "main": [
+        [
+          {
+            "node": "Chroma Add Documents",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate Question": {
+      "main": [
+        [
+          {
+            "node": "Ollama Embed Question",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Ollama Embed Question": {
+      "main": [
+        [
+          {
+            "node": "Prepare Chroma Query",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Chroma Query": {
+      "main": [
+        [
+          {
+            "node": "Build Chroma Query Body",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Chroma Query Top Chunks": {
+      "main": [
+        [
+          {
+            "node": "Build Answer Prompt",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Answer Prompt": {
+      "main": [
+        [
+          {
+            "node": "Ollama Generate Answer",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Ollama Generate Answer": {
+      "main": [
+        [
+          {
+            "node": "Build Final Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Final Response": {
+      "main": [
+        [
+          {
+            "node": "Force Final API Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Chroma Query Body": {
+      "main": [
+        [
+          {
+            "node": "Chroma Query Top Chunks",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Ingest PDF": {
+      "main": [
+        [
+          {
+            "node": "Extract from File",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Ask Question": {
+      "main": [
+        [
+          {
+            "node": "Validate Question",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Force Final API Response": {
+      "main": [
+        [
+          {
+            "node": "Respond to Webhook1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  },
+  "versionId": "0bbb9831-0460-4fa6-b878-f68dc5893dd0",
+  "meta": {
+    "instanceId": "7312ea099d22eeb24f839a76d05961b021cc0093cd2e1b14ad4b5b88c6f408dc"
+  },
+  "id": "d70Q3QhCXLKXJG3C",
+  "tags": []
+}
