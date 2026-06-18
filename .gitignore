@@ -1,0 +1,12 @@
+node_modules/
+.next/
+.vercel/
+.env
+.env.local
+.env.*.local
+*.log
+.next-dev.*.log
+coverage/
+dist/
+tmp/
+output/
