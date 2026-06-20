@@ -1,6 +1,9 @@
 import "server-only";
+import { CanvasFactory, getData } from "pdf-parse/worker";
 import { PDFParse } from "pdf-parse";
 import { AppError } from "./validators";
+
+PDFParse.setWorker(getData());
 
 export interface ExtractedPdf {
   text: string;
@@ -14,13 +17,16 @@ export async function extractPdfText(buffer: Buffer): Promise<ExtractedPdf> {
   let parser: PDFParse | undefined;
 
   try {
-    parser = new PDFParse({ data: new Uint8Array(buffer) });
+    parser = new PDFParse({
+      data: new Uint8Array(buffer),
+      CanvasFactory,
+    });
     const result = await parser.getText();
     const text = result.text?.trim() ?? "";
 
     if (!text || text.replace(/\s/g, "").length < 20) {
       throw new AppError(
-        "No extractable text was found. This PDF may be scanned or image-only; run OCR first and try again.",
+        "No extractable text found. This may be a scanned/image-only PDF.",
         422,
       );
     }
@@ -29,10 +35,16 @@ export async function extractPdfText(buffer: Buffer): Promise<ExtractedPdf> {
   } catch (error) {
     if (error instanceof AppError) throw error;
     throw new AppError(
-      `PDF extraction failed: ${error instanceof Error ? error.message : "unknown parser error"}`,
+      "PDF text extraction failed. The file may be damaged, encrypted, or unsupported.",
       422,
     );
   } finally {
-    await parser?.destroy();
+    try {
+      await parser?.destroy();
+    } catch (error) {
+      console.warn("ingest:pdf_parser_cleanup_failed", {
+        error: error instanceof Error ? error.message : "Unknown cleanup error",
+      });
+    }
   }
 }
