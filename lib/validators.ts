@@ -1,5 +1,3 @@
-import { NextRequest } from "next/server";
-
 export class AppError extends Error {
   constructor(
     message: string,
@@ -26,7 +24,8 @@ export function validatePdf(file: File): void {
   }
 
   const isPdf =
-    file.type === "application/pdf" || file.name.toLowerCase().endsWith(".pdf");
+    file.type.toLowerCase().includes("application/pdf") ||
+    file.name.toLowerCase().endsWith(".pdf");
   if (!isPdf) {
     throw new AppError("Only PDF files are supported.", 415);
   }
@@ -59,7 +58,7 @@ export function validateAskBody(body: unknown): {
   return { question: question.trim(), documentId: documentId.trim() };
 }
 
-export function requireAppPassword(request: NextRequest): void {
+export function requireAppPassword(request: Request): void {
   if (process.env.APP_REQUIRE_PASSWORD?.toLowerCase() !== "true") return;
 
   const expected = process.env.APP_PASSWORD;
