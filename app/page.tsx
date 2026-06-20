@@ -75,10 +75,36 @@ const features = [
 ];
 
 function messageFromPayload(payload: unknown, fallback: string): string {
-  if (payload && typeof payload === "object" && "message" in payload) {
-    return String((payload as { message: unknown }).message);
+  if (payload && typeof payload === "object") {
+    if ("error" in payload && (payload as { error: unknown }).error) {
+      return String((payload as { error: unknown }).error);
+    }
+    if ("message" in payload && (payload as { message: unknown }).message) {
+      return String((payload as { message: unknown }).message);
+    }
   }
   return fallback;
+}
+
+async function readApiPayload(response: Response): Promise<unknown> {
+  const contentType = response.headers.get("content-type")?.toLowerCase() ?? "";
+  if (contentType.includes("application/json")) {
+    try {
+      return await response.json();
+    } catch {
+      return {
+        error: `The server returned invalid JSON (${response.status}).`,
+      };
+    }
+  }
+
+  const text = await response.text().catch(() => "");
+  return {
+    error:
+      text.trim() && text.length < 300
+        ? text.trim()
+        : `The server returned an unexpected response (${response.status}).`,
+  };
 }
 
 export default function Home() {
@@ -127,9 +153,9 @@ export default function Home() {
   const loadDocuments = useCallback(async () => {
     try {
       const response = await fetch("/api/documents", { headers: authHeaders });
-      const payload = await response.json();
+      const payload = await readApiPayload(response);
       if (!response.ok) throw new Error(messageFromPayload(payload, "Could not load documents."));
-      const recent = payload.documents as DocumentRecord[];
+      const recent = (payload as { documents: DocumentRecord[] }).documents;
       setDocuments(recent);
       setDocumentId((current) =>
         current && recent.some((document) => document.id === current)
@@ -146,13 +172,17 @@ export default function Home() {
   useEffect(() => {
     fetch("/api/health")
       .then(async (response) => {
-        const payload = await response.json();
+        const payload = await readApiPayload(response);
+        if (!payload || typeof payload !== "object") {
+          throw new Error("Health check returned an unexpected response.");
+        }
         setHealth({
-          ready: Boolean(payload.ready),
-          passwordRequired: Boolean(payload.passwordRequired),
-          maxFileMb: Number(payload.maxFileMb) || 10,
-          embeddingDimensions: Number(payload.embeddingDimensions) || 768,
-          topK: Number(payload.topK) || 5,
+          ready: Boolean((payload as Record<string, unknown>).ready),
+          passwordRequired: Boolean((payload as Record<string, unknown>).passwordRequired),
+          maxFileMb: Number((payload as Record<string, unknown>).maxFileMb) || 10,
+          embeddingDimensions:
+            Number((payload as Record<string, unknown>).embeddingDimensions) || 768,
+          topK: Number((payload as Record<string, unknown>).topK) || 5,
         });
       })
       .catch(() =>
@@ -202,7 +232,9 @@ export default function Home() {
         headers: authHeaders,
         body: form,
       });
-      const payload = (await response.json()) as IngestResponse | { message?: string };
+      const payload = (await readApiPayload(response)) as
+        | IngestResponse
+        | { error?: string; message?: string };
       if (!response.ok) throw new Error(messageFromPayload(payload, "Indexing failed."));
 
       const result = payload as IngestResponse;
@@ -242,7 +274,9 @@ export default function Home() {
         headers: { "Content-Type": "application/json", ...authHeaders },
         body: JSON.stringify({ question, documentId }),
       });
-      const payload = (await response.json()) as AskResponse | { message?: string };
+      const payload = (await readApiPayload(response)) as
+        | AskResponse
+        | { error?: string; message?: string };
       if (!response.ok) throw new Error(messageFromPayload(payload, "The question failed."));
 
       const result = payload as AskResponse;
