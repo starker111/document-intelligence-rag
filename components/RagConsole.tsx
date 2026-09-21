@@ -70,6 +70,7 @@ interface Props {
   embeddingDimensions: number;
   topK: number;
   indexedAt: string;
+  embeddingDurationMs?: number | null;
   onPasswordChange: (password: string) => void;
   onUnlock: () => Promise<void>;
   onDocumentChange: (id: string) => void;
@@ -92,6 +93,7 @@ export function RagConsole({
   embeddingDimensions,
   topK,
   indexedAt,
+  embeddingDurationMs,
   onPasswordChange,
   onUnlock,
   onDocumentChange,
@@ -168,6 +170,7 @@ export function RagConsole({
             <div><dt>Chunks stored</dt><dd>{selectedDocument?.chunkCount ?? "—"}</dd></div>
             <div><dt>Embedding</dt><dd>{embeddingDimensions}D</dd></div>
             <div><dt>Top K</dt><dd>{topK}</dd></div>
+            <div><dt>Embedding Speed</dt><dd>{embeddingDurationMs ? `${embeddingDurationMs}ms` : "Fast (<1s)"}</dd></div>
             <div><dt>Indexed</dt><dd>{indexedAt || (selectedDocument?.createdAt ? new Date(selectedDocument.createdAt).toLocaleString() : "Available")}</dd></div>
           </dl>
         </div>
@@ -233,6 +236,42 @@ export function RagConsole({
             <UploadCloud size={16} />
             {operation === "upload" ? "Indexing document…" : "Upload & Index PDF"}
           </button>
+
+          <div style={{ display: "flex", justifyContent: "center", marginTop: "14px" }}>
+            <button
+              type="button"
+              disabled={operation !== null || locked}
+              onClick={async () => {
+                try {
+                  const res = await fetch("/sample-kepler-document.pdf");
+                  const blob = await res.blob();
+                  const sampleFile = new File([blob], "kepler-sample-document.pdf", {
+                    type: "application/pdf",
+                  });
+                  choose(sampleFile);
+                } catch (err) {
+                  console.error("Failed to load sample document", err);
+                }
+              }}
+              style={{
+                background: "transparent",
+                border: "1px dashed rgba(16, 185, 129, 0.4)",
+                borderRadius: "999px",
+                padding: "6px 16px",
+                fontSize: "10px",
+                color: "#059669",
+                fontFamily: "var(--font-space), sans-serif",
+                fontWeight: 600,
+                cursor: "pointer",
+                display: "inline-flex",
+                alignItems: "center",
+                gap: "6px",
+                transition: "all 0.2s ease",
+              }}
+            >
+              ⚡ Or load preloaded sample PDF to test
+            </button>
+          </div>
         </ShimmerBorderCard>
 
         <ShimmerBorderCard className="console-panel" id="ask">

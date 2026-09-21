@@ -1,5 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getSupabaseAdmin } from "@/lib/supabaseAdmin";
+import { listLocalDocuments } from "@/lib/localDocumentStore";
+import {
+  getSupabaseAdmin,
+  isSupabaseNetworkError,
+  supabaseServiceError,
+} from "@/lib/supabaseAdmin";
 import { errorResponse, requireAppPassword } from "@/lib/validators";
 
 export const runtime = "nodejs";
@@ -14,10 +19,28 @@ export async function GET(request: NextRequest) {
       .order("created_at", { ascending: false })
       .limit(20);
 
-    if (error) throw new Error(`Could not load documents: ${error.message}`);
+    if (error) {
+      if (!isSupabaseNetworkError(error)) {
+        throw supabaseServiceError("Could not load documents", error);
+      }
+
+      const documents = await listLocalDocuments();
+
+      return NextResponse.json({
+        success: true,
+        storage: "local",
+        documents: documents.slice(0, 20).map((document) => ({
+          id: document.id,
+          fileName: document.file_name,
+          chunkCount: document.chunk_count,
+          createdAt: document.created_at,
+        })),
+      });
+    }
 
     return NextResponse.json({
       success: true,
+      storage: "supabase",
       documents: (data ?? []).map((document) => ({
         id: document.id,
         fileName: document.file_name,

@@ -31,6 +31,8 @@ export interface IngestResponse {
   fileName: string;
   chunksStored: number;
   message: string;
+  durationMs?: number;
+  embeddingDurationMs?: number;
 }
 
 export interface AskResponse {

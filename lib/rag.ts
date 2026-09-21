@@ -1,7 +1,12 @@
 import "server-only";
 import { embedQuestion, generateAnswer } from "./ai";
+import { matchLocalDocumentChunks } from "./localDocumentStore";
 import { buildRagPrompt } from "./prompts";
-import { getSupabaseAdmin } from "./supabaseAdmin";
+import {
+  getSupabaseAdmin,
+  isSupabaseNetworkError,
+  supabaseServiceError,
+} from "./supabaseAdmin";
 import type { MatchedChunk, Reference } from "./types";
 import { AppError } from "./validators";
 
@@ -21,6 +26,27 @@ export async function answerDocumentQuestion(
   const topK = Math.min(Math.max(Number(process.env.APP_TOP_K ?? "3") || 3, 1), 10);
   const supabase = getSupabaseAdmin();
 
+  async function answerFromLocalStore() {
+    const localMatch = await matchLocalDocumentChunks(
+      queryEmbedding,
+      documentId,
+      topK,
+    );
+
+    if (!localMatch || !localMatch.chunks.length) return null;
+
+    const answer = await generateAnswer(buildRagPrompt(question, localMatch.chunks));
+    const references = localMatch.chunks.map((chunk, index) => ({
+      referenceNumber: index + 1,
+      fileName: chunk.file_name || localMatch.fileName,
+      chunkNumber: chunk.chunk_number,
+      similarity: Number(chunk.similarity),
+      snippet: cleanSnippet(chunk.content),
+    }));
+
+    return { answer, references };
+  }
+
   const [searchResult, documentResult] = await Promise.all([
     supabase.rpc("match_document_chunks", {
       query_embedding: queryEmbedding,
@@ -31,9 +57,19 @@ export async function answerDocumentQuestion(
   ]);
 
   if (searchResult.error) {
-    throw new AppError(`Vector search failed: ${searchResult.error.message}`, 502);
+    if (isSupabaseNetworkError(searchResult.error)) {
+      const localAnswer = await answerFromLocalStore();
+      if (localAnswer) return localAnswer;
+    }
+
+    throw supabaseServiceError("Vector search failed", searchResult.error);
   }
   if (documentResult.error || !documentResult.data) {
+    if (!documentResult.error || isSupabaseNetworkError(documentResult.error)) {
+      const localAnswer = await answerFromLocalStore();
+      if (localAnswer) return localAnswer;
+    }
+
     throw new AppError("The selected document no longer exists.", 404);
   }
 
@@ -42,6 +78,9 @@ export async function answerDocumentQuestion(
     file_name: chunk.file_name || documentResult.data.file_name,
   }));
   if (!chunks.length) {
+    const localAnswer = await answerFromLocalStore();
+    if (localAnswer) return localAnswer;
+
     throw new AppError(
       "No indexed passages were found for this document. Try re-indexing the PDF.",
       404,

@@ -1,8 +1,13 @@
 import { NextResponse } from "next/server";
 import { chunkText, normalizeText } from "@/lib/chunkText";
-import { EMBEDDING_DIMENSIONS, embedDocuments } from "@/lib/ai";
+import { EMBEDDING_DIMENSIONS, embedDocumentsWithMetrics } from "@/lib/ai";
+import { createLocalIndexedDocument, deleteLocalDocument } from "@/lib/localDocumentStore";
 import { extractPdfText } from "@/lib/pdf";
-import { getSupabaseAdmin } from "@/lib/supabaseAdmin";
+import {
+  getSupabaseAdmin,
+  isSupabaseNetworkError,
+  supabaseServiceError,
+} from "@/lib/supabaseAdmin";
 import {
   AppError,
   getMaxChunksPerPdf,
@@ -30,7 +35,9 @@ function jsonError(error: unknown): NextResponse {
 }
 
 export async function POST(request: Request) {
+  const startTime = Date.now();
   let documentId: string | undefined;
+  let documentStoredLocally = false;
   let step = "ingest:start";
 
   console.info(step);
@@ -89,7 +96,31 @@ export async function POST(request: Request) {
     step = "ingest:chunks_created";
     console.info(step, { chunks: chunks.length });
 
-    const embeddings = await embedDocuments(chunks);
+    const supabase = getSupabaseAdmin();
+    let useLocalStore = false;
+    const { error: databaseCheckError } = await supabase
+      .from("documents")
+      .select("id")
+      .limit(1);
+
+    if (databaseCheckError) {
+      if (!isSupabaseNetworkError(databaseCheckError)) {
+        throw supabaseServiceError(
+          "Could not connect to Supabase before indexing",
+          databaseCheckError,
+        );
+      }
+
+      useLocalStore = true;
+      console.warn("ingest:supabase_unavailable_using_local_store", {
+        error: databaseCheckError.message,
+      });
+    }
+    step = useLocalStore ? "ingest:local_store_ready" : "ingest:supabase_ready";
+    console.info(step);
+
+    const { embeddings, durationMs: embeddingDurationMs } =
+      await embedDocumentsWithMetrics(chunks);
     const invalidEmbedding = embeddings.findIndex(
       (embedding) =>
         !Array.isArray(embedding) || embedding.length !== EMBEDDING_DIMENSIONS,
@@ -104,9 +135,32 @@ export async function POST(request: Request) {
     console.info(step, {
       embeddings: embeddings.length,
       dimensions: EMBEDDING_DIMENSIONS,
+      durationMs: embeddingDurationMs,
     });
 
-    const supabase = getSupabaseAdmin();
+    if (useLocalStore) {
+      const document = await createLocalIndexedDocument(
+        value.name,
+        chunks,
+        embeddings,
+      );
+
+      documentId = document.id;
+      documentStoredLocally = true;
+      step = "ingest:local_document_created";
+      console.info(step, { documentId });
+
+      return NextResponse.json({
+        success: true,
+        documentId,
+        fileName: value.name,
+        chunksStored: chunks.length,
+        durationMs: Date.now() - startTime,
+        embeddingDurationMs,
+        message: "PDF indexed successfully in local storage and is ready for questions.",
+      });
+    }
+
     const { data: document, error: documentError } = await supabase
       .from("documents")
       .insert({
@@ -117,10 +171,7 @@ export async function POST(request: Request) {
       .single();
 
     if (documentError || !document) {
-      throw new AppError(
-        `Could not create the document record: ${documentError?.message ?? "No row returned."}`,
-        502,
-      );
+      throw supabaseServiceError("Could not create the document record", documentError);
     }
     documentId = document.id;
     step = "ingest:supabase_document_created";
@@ -139,7 +190,7 @@ export async function POST(request: Request) {
         .from("document_chunks")
         .insert(rows.slice(index, index + 50));
       if (chunkError) {
-        throw new AppError(`Chunk storage failed: ${chunkError.message}`, 502);
+        throw supabaseServiceError("Chunk storage failed", chunkError);
       }
     }
     step = "ingest:chunks_inserted";
@@ -153,6 +204,8 @@ export async function POST(request: Request) {
       documentId,
       fileName: value.name,
       chunksStored: chunks.length,
+      durationMs: Date.now() - startTime,
+      embeddingDurationMs,
       message: "PDF indexed successfully and is ready for questions.",
     });
   } catch (error) {
@@ -163,15 +216,19 @@ export async function POST(request: Request) {
 
     if (documentId) {
       try {
-        const { error: cleanupError } = await getSupabaseAdmin()
-          .from("documents")
-          .delete()
-          .eq("id", documentId);
-        if (cleanupError) {
-          console.error("ingest:cleanup_error", {
-            documentId,
-            error: cleanupError.message,
-          });
+        if (documentStoredLocally) {
+          await deleteLocalDocument(documentId);
+        } else {
+          const { error: cleanupError } = await getSupabaseAdmin()
+            .from("documents")
+            .delete()
+            .eq("id", documentId);
+          if (cleanupError) {
+            console.error("ingest:cleanup_error", {
+              documentId,
+              error: cleanupError.message,
+            });
+          }
         }
       } catch (cleanupError) {
         console.error("ingest:cleanup_error", {

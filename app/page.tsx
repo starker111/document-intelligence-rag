@@ -121,6 +121,7 @@ export default function Home() {
   const [indexedFileName, setIndexedFileName] = useState("");
   const [lastChunkCount, setLastChunkCount] = useState(0);
   const [indexedAt, setIndexedAt] = useState("");
+  const [embeddingDurationMs, setEmbeddingDurationMs] = useState<number | null>(null);
   const [health, setHealth] = useState<Health>({
     ready: false,
     passwordRequired: null,
@@ -244,7 +245,11 @@ export default function Home() {
       setLastChunkCount(result.chunksStored);
       setIndexedAt(new Date().toLocaleString());
       setLastOperation(`Indexed ${result.fileName}`);
-      addLog(`${result.fileName} is ready with ${result.chunksStored} chunks.`, "success");
+      if (result.embeddingDurationMs) {
+        setEmbeddingDurationMs(result.embeddingDurationMs);
+      }
+      const speedStr = result.embeddingDurationMs ? ` (${result.embeddingDurationMs}ms embedding)` : "";
+      addLog(`${result.fileName} ready: ${result.chunksStored} chunks${speedStr}.`, "success");
       await loadDocuments();
     } catch (uploadError) {
       setStatus("error");
@@ -383,6 +388,7 @@ export default function Home() {
         embeddingDimensions={health.embeddingDimensions}
         topK={health.topK}
         indexedAt={indexedAt}
+        embeddingDurationMs={embeddingDurationMs}
         onPasswordChange={setPassword}
         onUnlock={loadDocuments}
         onDocumentChange={setDocumentId}
@@ -426,6 +432,7 @@ export default function Home() {
         topK={health.topK}
         selectedDocument={selectedDocument?.fileName || "None selected"}
         lastOperation={lastOperation}
+        embeddingDurationMs={embeddingDurationMs}
       />
 
       <section className="final-cta page-width">

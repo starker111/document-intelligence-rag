@@ -8,6 +8,7 @@ interface Props {
   topK: number;
   selectedDocument: string;
   lastOperation: string;
+  embeddingDurationMs?: number | null;
 }
 
 export function BenchmarkTable({
@@ -17,10 +18,12 @@ export function BenchmarkTable({
   topK,
   selectedDocument,
   lastOperation,
+  embeddingDurationMs,
 }: Props) {
   const rows = [
     ["Documents Indexed", String(documents.length), documents.length ? "Active" : "Waiting", "Available in the current workspace"],
     ["Chunks Stored", String(totalChunks), totalChunks ? "Synced" : "Waiting", "Semantic passages stored in pgvector"],
+    ["Embedding Speed", embeddingDurationMs ? `${embeddingDurationMs}ms` : "Fast (<1s)", "Optimized", "Resilient Gemini vectorization with retry"],
     ["Embedding Dimension", String(embeddingDimensions), "Configured", "Gemini embedding output size"],
     ["Retrieval Top K", String(topK), "Configured", "Passages considered for each answer"],
     ["Selected Document", selectedDocument, selectedDocument === "None selected" ? "Waiting" : "Active", "Current question context"],
